@@ -1,3 +1,0 @@
-[submodule "github.com/census-instrumentation/opencensus-proto"]
-	path = vendor/github.com/census-instrumentation/opencensus-proto
-	url = https://github.com/census-instrumentation/opencensus-proto
