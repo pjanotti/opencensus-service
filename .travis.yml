@@ -5,6 +5,10 @@ go_import_path: github.com/census-instrumentation/opencensus-service
 go:
   - 1.11.x
  
+env:
+  global:
+    GO111MODULE=on
+
 install:
   - make install-tools
-  - GO111MODULE=on go get -t -v ./...
+  - go get -t -v ./...
