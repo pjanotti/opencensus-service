@@ -29,11 +29,12 @@ const (
 	zipkinEntry     = "zipkin"
 
 	// flags
-	configCfg         = "config"
-	jaegerReceiverFlg = "receive-jaeger"
-	ocReceiverFlg     = "receive-oc-trace"
-	zipkinReceiverFlg = "receive-zipkin"
-	debugProcessorFlg = "debug-processor"
+	configCfg            = "config"
+	jaegerReceiverFlg    = "receive-jaeger"
+	ocReceiverFlg        = "receive-oc-trace"
+	zipkinReceiverFlg    = "receive-zipkin"
+	debugProcessorFlg    = "debug-processor"
+	debugTailSamplingFlg = "debug-tailsampling"
 )
 
 // Flags adds flags related to basic building of the collector application to the given flagset.
@@ -46,6 +47,7 @@ func Flags(flags *flag.FlagSet) {
 	flags.Bool(zipkinReceiverFlg, false,
 		fmt.Sprintf("Flag to run the Zipkin receiver, default settings: %+v", *NewDefaultZipkinReceiverCfg()))
 	flags.Bool(debugProcessorFlg, false, "Flag to add a debug processor (combine with log level DEBUG to log incoming spans)")
+	flags.Bool(debugTailSamplingFlg, false, "Flag to add the tail-based sampling processor with an always sample policy")
 }
 
 // GetConfigFile gets the config file from the config file flag.
@@ -56,6 +58,11 @@ func GetConfigFile(v *viper.Viper) string {
 // DebugProcessorEnabled returns true if the debug processor is enabled, and false otherwise
 func DebugProcessorEnabled(v *viper.Viper) bool {
 	return v.GetBool(debugProcessorFlg)
+}
+
+// DebugTailSamplingEnabled returns true if the debug processor is enabled, and false otherwise
+func DebugTailSamplingEnabled(v *viper.Viper) bool {
+	return v.GetBool(debugTailSamplingFlg)
 }
 
 // JaegerReceiverCfg holds configuration for Jaeger receivers.
