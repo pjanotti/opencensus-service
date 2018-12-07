@@ -17,10 +17,15 @@ package processor
 import (
 	"sync"
 	"testing"
+	"time"
 
 	agenttracepb "github.com/census-instrumentation/opencensus-proto/gen-go/agent/trace/v1"
 	tracepb "github.com/census-instrumentation/opencensus-proto/gen-go/trace/v1"
 	"go.uber.org/zap"
+)
+
+const (
+	defaultTestDecisionWait = 30 * time.Second
 )
 
 func TestIdBatcher(t *testing.T) {
@@ -84,7 +89,7 @@ func TestIdBatcher(t *testing.T) {
 func TestSequentialTraceArrival(t *testing.T) {
 	traceIds, batches := generateIdsAndBatches(128)
 	// First do it linearly
-	tsp := NewTailSamplingSpanProcessor(nil, uint64(2*len(traceIds)), zap.NewNop()).(*tailSamplingSpanProcessor)
+	tsp := NewTailSamplingSpanProcessor(nil, uint64(2*len(traceIds)), defaultTestDecisionWait, zap.NewNop()).(*tailSamplingSpanProcessor)
 	for _, batch := range batches {
 		tsp.ProcessSpans(batch, "test")
 	}
@@ -102,7 +107,7 @@ func TestConcurrentTraceArrival(t *testing.T) {
 	traceIds, batches := generateIdsAndBatches(128)
 
 	var wg sync.WaitGroup
-	tsp := NewTailSamplingSpanProcessor(nil, uint64(2*len(traceIds)), zap.NewNop()).(*tailSamplingSpanProcessor)
+	tsp := NewTailSamplingSpanProcessor(nil, uint64(2*len(traceIds)), defaultTestDecisionWait, zap.NewNop()).(*tailSamplingSpanProcessor)
 	for _, batch := range batches {
 		wg.Add(1)
 		go func(b *agenttracepb.ExportTraceServiceRequest, sf string) {
@@ -126,7 +131,7 @@ func TestConcurrentTraceMapSize(t *testing.T) {
 	traceIds, batches := generateIdsAndBatches(210)
 	const maxSize = 100
 	var wg sync.WaitGroup
-	tsp := NewTailSamplingSpanProcessor(nil, uint64(maxSize), zap.NewNop()).(*tailSamplingSpanProcessor)
+	tsp := NewTailSamplingSpanProcessor(nil, uint64(maxSize), defaultTestDecisionWait, zap.NewNop()).(*tailSamplingSpanProcessor)
 	for _, batch := range batches {
 		wg.Add(1)
 		go func(b *agenttracepb.ExportTraceServiceRequest, sf string) {

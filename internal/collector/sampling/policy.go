@@ -14,29 +14,37 @@
 
 package sampling
 
-import "time"
+import (
+	"sync"
+	"time"
+
+	agenttracepb "github.com/census-instrumentation/opencensus-proto/gen-go/agent/trace/v1"
+	tracepb "github.com/census-instrumentation/opencensus-proto/gen-go/trace/v1"
+)
 
 // TraceData stores the trace related data.
 type TraceData struct {
-	// Decision gives the current status of the sampling decision.
-	Decision Decision
+	sync.Mutex
+	// Decision gives the current status of the sampling decision for each policy.
+	Decision []Decision
 	// Arrival time the first span for the trace was received.
 	ArrivalTime time.Time
 	// Decisiontime time when sampling decision was taken.
 	DecisionTime time.Time
 	// SpanCount track the number of spans on the trace.
 	SpanCount int64
+	// TraceBatches stores all the batches received for the trace.
+	TraceBatches []*agenttracepb.ExportTraceServiceRequest
 }
 
-// Spans TODO: (@tail) for now just a place holder
-type Spans int
-
 // Decision gives the status of sampling decision.
-type Decision int
+type Decision int32
 
 const (
+	// Unspecified indicates that the status of the decision was not set yet.
+	Unspecified Decision = iota
 	// Pending indicates that the policy was not evaluated yet.
-	Pending Decision = iota
+	Pending
 	// Sampled is used to indicate that the decision was already taken
 	// to sample the data.
 	Sampled
@@ -55,7 +63,7 @@ type PolicyEvaluator interface {
 	// after the sampling decision was already taken for the trace.
 	// This gives the evaluator a chance to log any message/metrics and/or update any
 	// related internal state.
-	OnLateArrivingSpans(earlyDecision Decision, spans []*Spans) error
+	OnLateArrivingSpans(earlyDecision Decision, spans []*tracepb.Span) error
 
 	// Evaluate looks at the trace data and returns a corresponding SamplingDecision.
 	Evaluate(traceID []byte, trace *TraceData) (Decision, error)
