@@ -15,6 +15,7 @@
 package processor
 
 import (
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -36,25 +37,110 @@ type PolicyAndDestinations struct {
 // tailSamplingSpanProcessor handles the incoming trace data and uses the given sampling
 // policies to sample traces.
 type tailSamplingSpanProcessor struct {
-	start        sync.Once
-	policies     []*PolicyAndDestinations
-	logger       *zap.Logger
-	idToTrace    *concurrentMap
-	policyTicker tTicker
+	start           sync.Once
+	maxNumTraces    uint64
+	policies        []*PolicyAndDestinations
+	logger          *zap.Logger
+	idToTrace       *concurrentMap
+	policyTicker    tTicker
+	batchQueue      *batcher
+	deleteQueue     *batcher
+	deleteChan      chan [][]byte
+	deleteBatchSize uint64
+	deleteStop      chan bool
+	numTracesOnMap  uint64
 }
 
 var _ SpanProcessor = (*tailSamplingSpanProcessor)(nil)
 
+const (
+	deletionQueueBatches uint64 = 100
+)
+
 // NewTailSamplingSpanProcessor creates a TailSamplingSpanProcessor from the variadic
 // list of passed SpanProcessors.
-func NewTailSamplingSpanProcessor(policies []*PolicyAndDestinations, logger *zap.Logger) SpanProcessor {
+func NewTailSamplingSpanProcessor(policies []*PolicyAndDestinations, maxNumTraces uint64, logger *zap.Logger) SpanProcessor {
 	tsp := &tailSamplingSpanProcessor{
-		policies:  policies,
-		logger:    logger,
-		idToTrace: newConcurrentMap(),
+		maxNumTraces: maxNumTraces,
+		policies:     policies,
+		logger:       logger,
+		idToTrace:    newConcurrentMap(),
+		batchQueue:   newBatchQueue(30, 50, uint64(2*runtime.NumCPU())), // TODO: (@tail) constants or from config, same below
+		deleteChan:   make(chan [][]byte, deletionQueueBatches),
+		deleteStop:   make(chan bool),
 	}
-	tsp.setupPolicyTicker(30*time.Second, 1*time.Second)
+
+	tsp.policyTicker = newPolicyTicker(tsp.samplingPolicyOnTick)
+
+	switch {
+	case maxNumTraces < deletionQueueBatches:
+		tsp.deleteBatchSize = 1 // For tests
+	case maxNumTraces%deletionQueueBatches == 0:
+		tsp.deleteBatchSize = maxNumTraces / deletionQueueBatches
+	default:
+		tsp.deleteBatchSize = (maxNumTraces + deletionQueueBatches) / deletionQueueBatches
+	}
+
+	actualDeletionBatches := maxNumTraces / tsp.deleteBatchSize
+	tsp.deleteQueue = newBatchQueue(actualDeletionBatches, tsp.deleteBatchSize/4, uint64(runtime.NumCPU()))
+	tsp.deleteChan = make(chan [][]byte, actualDeletionBatches)
+
+	go func() {
+		for deleteBatch := range tsp.deleteChan {
+			deleteCount := len(deleteBatch)
+			if deleteCount == 0 {
+				continue
+			}
+			tsp.idToTrace.BatchDeletion(deleteBatch)
+			atomic.AddUint64(&tsp.numTracesOnMap, ^uint64(deleteCount-1))
+		}
+		tsp.deleteStop <- true
+	}()
 	return tsp
+}
+
+func (tsp *tailSamplingSpanProcessor) samplingPolicyOnTick() {
+	var idNotFoundOnMapCount, evaluateErrorCount, decisionSampled, decisionNotSampled int
+	batch, _ := tsp.batchQueue.getAndSwitchBatch() // TODO: (@tail) special treatment when there is no more data
+	batchLen := len(batch)
+	tsp.logger.Debug("PoliceTicker: ticked")
+	for _, id := range batch {
+		for _, policy := range tsp.policies {
+			trace, ok := tsp.idToTrace.Load(traceKey(id))
+			if !ok {
+				idNotFoundOnMapCount++
+				continue
+			}
+
+			decision, err := policy.Evaluator.Evaluate(id, trace)
+			if err != nil {
+				evaluateErrorCount++
+				tsp.logger.Error("Sampling policy error", zap.Error(err))
+				continue
+			}
+
+			trace.Decision = decision
+			trace.DecisionTime = time.Now()
+
+			switch decision {
+			case sampling.Sampled:
+				decisionSampled++
+			case sampling.NotSampled:
+				decisionNotSampled++
+			}
+		}
+	}
+
+	if idNotFoundOnMapCount > 0 {
+		tsp.logger.Error("Trace ids not present on map", zap.Int("count", idNotFoundOnMapCount))
+	}
+	if idNotFoundOnMapCount > 0 {
+		tsp.logger.Error("Policy evaluation errors", zap.Int("count", evaluateErrorCount))
+	}
+	tsp.logger.Debug("Sampling policy evaluation completed",
+		zap.Int("batch.len", batchLen),
+		zap.Int("sampled", decisionSampled),
+		zap.Int("notSampled", decisionNotSampled))
 }
 
 // ProcessSpans is required by the SpanProcessor interface.
@@ -76,41 +162,46 @@ func (tsp *tailSamplingSpanProcessor) ProcessSpans(batch *agenttracepb.ExportTra
 
 	for id, spans := range idToSpans {
 		lenSpans := int64(len(spans))
-		actualData, loaded := tsp.idToTrace.LoadOrStore(id, func() *traceValue {
-			traceData := new(traceValue)
-			traceData.Add(lenSpans)
-			return traceData
+		actualData, loaded := tsp.idToTrace.LoadOrStore(id, func() *sampling.TraceData {
+			return &sampling.TraceData{
+				ArrivalTime: time.Now(),
+				SpanCount:   lenSpans,
+			}
 		})
 		if loaded {
 			// TODO: (@tail) anything related to traceData needs to be protected
-			actualData.Add(lenSpans)
-		} // TODO: (@tail) set other fields on demand for the first time.
+			atomic.AddInt64(&actualData.SpanCount, lenSpans)
+		} else {
+			tsp.batchQueue.addToBatchQueue([]byte(id)) // TODO: (@tail) check casting
+			tsp.deleteQueue.addToBatchQueue([]byte(id))
+			currMapSize := atomic.AddUint64(&tsp.numTracesOnMap, 1)
+			if currMapSize%tsp.deleteBatchSize == 0 {
+				deleteBatch, _ := tsp.deleteQueue.getAndSwitchBatch()
+				tsp.deleteChan <- deleteBatch
+			}
+			// TODO: (@tail) set other fields on demand for the first time.
+		}
 	}
 
 	return 0, nil
 }
 
-func (tsp *tailSamplingSpanProcessor) setupPolicyTicker(decisionWait time.Duration, tickerFrequency time.Duration) {
-	tsp.policyTicker = newPolicyTicker(func() {
-		tsp.logger.Debug("PoliceTicker: ticked")
-	})
-}
-
 type batcher struct {
-	pendingIds                chan []byte
-	batches                   chan [][]byte
+	pendingIds chan []byte
+	batches    chan [][]byte
+	// cbMutex protects the currentBatch storing ids.
 	cbMutex                   sync.Mutex
 	currentBatch              [][]byte
 	numBatches                uint64
-	newBatchesInitialCapacity int
+	newBatchesInitialCapacity uint64
 	stopchan                  chan bool
 	stopped                   bool
 }
 
-func newBatchQueue(numBatches, newBatchesInitialCapacity, channelSize int) *batcher {
+func newBatchQueue(numBatches, newBatchesInitialCapacity, channelSize uint64) *batcher {
 	batches := make(chan [][]byte, numBatches)
 	// First numBatches batches will be empty
-	for i := 0; i < numBatches; i++ {
+	for i := uint64(0); i < numBatches; i++ {
 		batches <- nil
 	}
 
@@ -201,26 +292,18 @@ var _ tTicker = (*policyTicker)(nil)
 // actual implementation are hidden and can be swapped as needed.
 type concurrentMap struct {
 	sync.RWMutex
-	m map[traceKey]*traceValue
+	m map[traceKey]*sampling.TraceData
 }
 
 type traceKey string
 
-type traceValue struct {
-	spanCount int64
-}
-
-func (tv *traceValue) Add(add int64) int64 {
-	return atomic.AddInt64(&tv.spanCount, add)
-}
-
 func newConcurrentMap() *concurrentMap {
 	return &concurrentMap{
-		m: make(map[traceKey]*traceValue),
+		m: make(map[traceKey]*sampling.TraceData),
 	}
 }
 
-func (cm *concurrentMap) LoadOrStore(key traceKey, valueFactory func() *traceValue) (actual *traceValue, loaded bool) {
+func (cm *concurrentMap) LoadOrStore(key traceKey, valueFactory func() *sampling.TraceData) (actual *sampling.TraceData, loaded bool) {
 	cm.RLock()
 	actual, loaded = cm.m[key]
 	cm.RUnlock()
@@ -249,7 +332,14 @@ func (cm *concurrentMap) Delete(key traceKey) {
 	cm.Unlock()
 }
 
-func (cm *concurrentMap) Load(key traceKey) (value *traceValue, ok bool) {
+func (cm *concurrentMap) BatchDeletion(keys [][]byte) {
+	cm.Lock()
+	for _, key := range keys {
+		delete(cm.m, traceKey(key))
+	}
+	cm.Unlock()
+}
+func (cm *concurrentMap) Load(key traceKey) (value *sampling.TraceData, ok bool) {
 	cm.RLock()
 	value, ok = cm.m[key]
 	cm.RUnlock()

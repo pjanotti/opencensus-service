@@ -28,7 +28,7 @@ func TestIdBatcher(t *testing.T) {
 	const queueSize = 5
 	b := newBatchQueue(queueSize, 4, 8)
 
-	traceIds, _ := generateIdsAndBatches()
+	traceIds, _ := generateIdsAndBatches(128)
 	nextBatch := 1
 	currentBatchSize := 0
 	wantIDCount := 0
@@ -74,9 +74,6 @@ func TestIdBatcher(t *testing.T) {
 		}
 
 		gotIDCount += len(batch)
-		for _, b := range batch {
-			t.Logf("%v\n", b)
-		}
 	}
 
 	if wantIDCount != gotIDCount {
@@ -85,9 +82,9 @@ func TestIdBatcher(t *testing.T) {
 }
 
 func TestSequentialTraceArrival(t *testing.T) {
-	traceIds, batches := generateIdsAndBatches()
+	traceIds, batches := generateIdsAndBatches(128)
 	// First do it linearly
-	tsp := NewTailSamplingSpanProcessor(nil, zap.NewNop()).(*tailSamplingSpanProcessor)
+	tsp := NewTailSamplingSpanProcessor(nil, uint64(2*len(traceIds)), zap.NewNop()).(*tailSamplingSpanProcessor)
 	for _, batch := range batches {
 		tsp.ProcessSpans(batch, "test")
 	}
@@ -95,17 +92,17 @@ func TestSequentialTraceArrival(t *testing.T) {
 	for i := range traceIds {
 		if v, ok := tsp.idToTrace.Load(traceKey(traceIds[i])); !ok {
 			t.Fatal("Missing expected traceId")
-		} else if v.spanCount != int64(i+1) {
-			t.Fatalf("Incorrect number of spans for entry %d, got %d, want %d", i, v.spanCount, i+1)
+		} else if v.SpanCount != int64(i+1) {
+			t.Fatalf("Incorrect number of spans for entry %d, got %d, want %d", i, v.SpanCount, i+1)
 		}
 	}
 }
 
 func TestConcurrentTraceArrival(t *testing.T) {
-	traceIds, batches := generateIdsAndBatches()
+	traceIds, batches := generateIdsAndBatches(128)
 
 	var wg sync.WaitGroup
-	tsp := NewTailSamplingSpanProcessor(nil, zap.NewNop()).(*tailSamplingSpanProcessor)
+	tsp := NewTailSamplingSpanProcessor(nil, uint64(2*len(traceIds)), zap.NewNop()).(*tailSamplingSpanProcessor)
 	for _, batch := range batches {
 		wg.Add(1)
 		go func(b *agenttracepb.ExportTraceServiceRequest, sf string) {
@@ -119,14 +116,45 @@ func TestConcurrentTraceArrival(t *testing.T) {
 	for i := range traceIds {
 		if v, ok := tsp.idToTrace.Load(traceKey(traceIds[i])); !ok {
 			t.Fatal("Missing expected traceId")
-		} else if v.spanCount != int64(i+1) {
-			t.Fatalf("Incorrect number of spans for entry %d, got %d, want %d", i, v.spanCount, i+1)
+		} else if v.SpanCount != int64(i+1) {
+			t.Fatalf("Incorrect number of spans for entry %d, got %d, want %d", i, v.SpanCount, i+1)
 		}
 	}
 }
 
-func generateIdsAndBatches() ([][]byte, []*agenttracepb.ExportTraceServiceRequest) {
-	const numIds byte = 128
+func TestConcurrentTraceMapSize(t *testing.T) {
+	traceIds, batches := generateIdsAndBatches(210)
+	const maxSize = 100
+	var wg sync.WaitGroup
+	tsp := NewTailSamplingSpanProcessor(nil, uint64(maxSize), zap.NewNop()).(*tailSamplingSpanProcessor)
+	for _, batch := range batches {
+		wg.Add(1)
+		go func(b *agenttracepb.ExportTraceServiceRequest, sf string) {
+			tsp.ProcessSpans(b, sf)
+			wg.Done()
+		}(batch, "test")
+	}
+
+	wg.Wait()
+	tsp.deleteQueue.stop()
+	for {
+		batch, moredata := tsp.deleteQueue.getAndSwitchBatch()
+		tsp.deleteChan <- batch
+		if !moredata {
+			close(tsp.deleteChan)
+			break
+		}
+	}
+	<-tsp.deleteStop
+
+	for i := 0; i < maxSize; i++ {
+		if _, ok := tsp.idToTrace.Load(traceKey(traceIds[i])); ok {
+			t.Fatalf("Found unexpected traceId still on map %v", traceIds[i])
+		}
+	}
+}
+
+func generateIdsAndBatches(numIds byte) ([][]byte, []*agenttracepb.ExportTraceServiceRequest) {
 	traceIds := make([][]byte, numIds, numIds)
 	for i := byte(0); i < numIds; i++ {
 		traceIds[i] = []byte{i, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}

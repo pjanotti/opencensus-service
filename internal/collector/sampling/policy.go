@@ -14,8 +14,19 @@
 
 package sampling
 
-// Trace TODO: (@tail) for now just a place holder
-type Trace int
+import "time"
+
+// TraceData stores the trace related data.
+type TraceData struct {
+	// Decision gives the current status of the sampling decision.
+	Decision Decision
+	// Arrival time the first span for the trace was received.
+	ArrivalTime time.Time
+	// Decisiontime time when sampling decision was taken.
+	DecisionTime time.Time
+	// SpanCount track the number of spans on the trace.
+	SpanCount int64
+}
 
 // Spans TODO: (@tail) for now just a place holder
 type Spans int
@@ -25,7 +36,7 @@ type Decision int
 
 const (
 	// Pending indicates that the policy was not evaluated yet.
-	Pending = iota
+	Pending Decision = iota
 	// Sampled is used to indicate that the decision was already taken
 	// to sample the data.
 	Sampled
@@ -47,9 +58,9 @@ type PolicyEvaluator interface {
 	OnLateArrivingSpans(earlyDecision Decision, spans []*Spans) error
 
 	// Evaluate looks at the trace data and returns a corresponding SamplingDecision.
-	Evaluate(traceID []byte, trace *Trace) (Decision, error)
+	Evaluate(traceID []byte, trace *TraceData) (Decision, error)
 
 	// OnDroppedSpans is called when the trace needs to be dropped, due to memory
 	// pressure, before the decision_wait time has been reached.
-	OnDroppedSpans(traceID []byte, trace *Trace) (Decision, error)
+	OnDroppedSpans(traceID []byte, trace *TraceData) (Decision, error)
 }
