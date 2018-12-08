@@ -33,8 +33,8 @@ type TraceData struct {
 	DecisionTime time.Time
 	// SpanCount track the number of spans on the trace.
 	SpanCount int64
-	// TraceBatches stores all the batches received for the trace.
-	TraceBatches []*agenttracepb.ExportTraceServiceRequest
+	// ReceivedBatches stores all the batches received for the trace.
+	ReceivedBatches []*agenttracepb.ExportTraceServiceRequest
 }
 
 // Decision gives the status of sampling decision.

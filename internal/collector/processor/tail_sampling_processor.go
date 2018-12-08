@@ -106,13 +106,12 @@ func (tsp *tailSamplingSpanProcessor) setupTraceDeletion(maxNumTraces, deletionQ
 			for i, trace := range traces {
 				for j := 0; j < policiesLen; j++ {
 					if trace.Decision[j] == sampling.Pending {
-						for _, policy := range tsp.policies {
-							if decision, err := policy.Evaluator.OnDroppedSpans(deleteBatch[i], trace); err != nil {
-								tsp.logger.Warn("OnDroppedSpans",
-									zap.String("policy", policy.Name),
-									zap.Int("decision", int(decision)),
-									zap.Error(err))
-							}
+						policy := tsp.policies[j]
+						if decision, err := policy.Evaluator.OnDroppedSpans(deleteBatch[i], trace); err != nil {
+							tsp.logger.Warn("OnDroppedSpans",
+								zap.String("policy", policy.Name),
+								zap.Int("decision", int(decision)),
+								zap.Error(err))
 						}
 					}
 				}
@@ -126,7 +125,7 @@ func (tsp *tailSamplingSpanProcessor) samplingPolicyOnTick() {
 	var idNotFoundOnMapCount, evaluateErrorCount, decisionSampled, decisionNotSampled int
 	batch, _ := tsp.batchQueue.getAndSwitchBatch() // TODO: (@tail) special treatment when there is no more data
 	batchLen := len(batch)
-	tsp.logger.Debug("PoliceTicker: ticked")
+	tsp.logger.Debug("Sampling Policy Evaluation ticked")
 	for _, id := range batch {
 		trace, ok := tsp.idToTrace.Load(traceKey(id))
 		if !ok {
@@ -148,10 +147,23 @@ func (tsp *tailSamplingSpanProcessor) samplingPolicyOnTick() {
 			switch decision {
 			case sampling.Sampled:
 				decisionSampled++
+				trace.Lock()
+				traceBatches := trace.ReceivedBatches
+				trace.Unlock()
+				for j := 0; j < len(policy.Destinations); j++ {
+					for k := 0; k < len(traceBatches); k++ {
+						policy.Destinations[j].ProcessSpans(traceBatches[k], "tail-sampling")
+					}
+				}
 			case sampling.NotSampled:
 				decisionNotSampled++
 			}
 		}
+
+		// Sampled or not, remove the batches
+		trace.Lock()
+		trace.ReceivedBatches = nil
+		trace.Unlock()
 	}
 
 	if idNotFoundOnMapCount > 0 {
@@ -221,9 +233,11 @@ func (tsp *tailSamplingSpanProcessor) ProcessSpans(batch *agenttracepb.ExportTra
 			// If decision is pending, we want to add the new spans still under the lock, so the decision doesn't happen
 			// in between the transition from pending.
 			if actualDecision == sampling.Pending {
-				// Add the spans to the trace.
+				// Add the spans to the trace, but only once
 				traceBatch := prepareTraceBatch(spans, singleTrace, batch)
-				actualData.TraceBatches = append(actualData.TraceBatches, traceBatch)
+				actualData.ReceivedBatches = append(actualData.ReceivedBatches, traceBatch)
+				actualData.Unlock()
+				break
 			}
 			actualData.Unlock()
 
