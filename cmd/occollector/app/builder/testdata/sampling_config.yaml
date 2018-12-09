@@ -1,0 +1,24 @@
+receivers:
+  jaeger:
+    collector_http_port: 14268
+  opencensus:
+    address: "127.0.0.1:55678"
+processors:
+  jaeger1:
+    sender-type: thrift-http
+    thrift-http:
+      collector_endpoint: "http://host.docker.internal:14368/api/traces"
+  jaeger2:
+    sender-type: thrift-http
+    thrift-http:
+      collector_endpoint: "http://host.docker.internal:14468/api/traces"
+sampling:
+  mode: tail
+  decision_wait: 31s
+  num_traces: 20001
+  policies:
+    probabilistic: 
+      probability: 5.0
+      exporter: jaeger1
+    attribute-filter: 
+      exporter: jaeger2

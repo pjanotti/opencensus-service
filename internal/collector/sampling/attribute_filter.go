@@ -45,7 +45,7 @@ func (as *attributeFilter) Evaluate(traceID []byte, trace *TraceData) (Decision,
 			}
 			if v, ok := span.Attributes.AttributeMap["http.status_code"]; ok {
 				status := v.GetIntValue()
-				if status < 200 || status > 299 {
+				if status > 399 {
 					return Sampled, nil
 				}
 			}

@@ -23,6 +23,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	tchReporter "github.com/jaegertracing/jaeger/cmd/agent/app/reporter/tchannel"
 	"github.com/spf13/cobra"
@@ -38,16 +39,18 @@ import (
 	"github.com/census-instrumentation/opencensus-service/internal/collector/jaeger"
 	"github.com/census-instrumentation/opencensus-service/internal/collector/opencensus"
 	"github.com/census-instrumentation/opencensus-service/internal/collector/processor"
+	"github.com/census-instrumentation/opencensus-service/internal/collector/sampling"
 	"github.com/census-instrumentation/opencensus-service/internal/collector/zipkin"
 )
 
 const (
-	configCfg         = "config"
-	logLevelCfg       = "log-level"
-	jaegerReceiverFlg = "receive-jaeger"
-	ocReceiverFlg     = "receive-oc-trace"
-	zipkinReceiverFlg = "receive-zipkin"
-	debugProcessorFlg = "debug-processor"
+	configCfg            = "config"
+	logLevelCfg          = "log-level"
+	jaegerReceiverFlg    = "receive-jaeger"
+	ocReceiverFlg        = "receive-oc-trace"
+	zipkinReceiverFlg    = "receive-zipkin"
+	debugProcessorFlg    = "debug-processor"
+	debugTailSamplingFlg = "debug-tailsampling"
 )
 
 var (
@@ -88,6 +91,7 @@ func init() {
 	rootCmd.Flags().Bool(zipkinReceiverFlg, false,
 		fmt.Sprintf("Flag to run the Zipkin receiver, default settings: %+v", *builder.NewDefaultZipkinReceiverCfg()))
 	rootCmd.Flags().Bool(debugProcessorFlg, false, "Flag to add a debug processor (combine with log level DEBUG to log incoming spans)")
+	rootCmd.Flags().Bool(debugTailSamplingFlg, false, "Flag to add the tail-based sampling processor with an always sample policy")
 
 	// TODO: (@pjanotti) add builder options as flags, before calls bellow. Likely it will require code re-org.
 
@@ -124,6 +128,7 @@ func execute() {
 
 	var closeFns []func()
 	var spanProcessors []processor.SpanProcessor
+	nameToSpanProcessor := make(map[string]processor.SpanProcessor) 
 	exportersCloseFns, exporters := createExporters()
 	closeFns = append(closeFns, exportersCloseFns...)
 	if len(exporters) > 0 {
@@ -132,11 +137,15 @@ func execute() {
 		// TODO: (@pjanotti) we should avoid this step in the long run, its an extra hop just to re-use
 		// the exporters: this can lose node information and it is not ideal for performance and delegates
 		// the retry/buffering to the exporters (that are designed to run within the tracing process).
-		spanProcessors = append(spanProcessors, processor.NewTraceExporterProcessor(exporters...))
+		traceExpProc := processor.NewTraceExporterProcessor(exporters...)
+		nameToSpanProcessor["exporters"] = traceExpProc
+		spanProcessors = append(spanProcessors, traceExpProc)
 	}
 
 	if v.GetBool(debugProcessorFlg) {
-		spanProcessors = append(spanProcessors, processor.NewNoopSpanProcessor(logger))
+		dbgProc := processor.NewNoopSpanProcessor(logger)
+		nameToSpanProcessor["debug"] = dbgProc
+		spanProcessors = append(spanProcessors, dbgProc)
 	}
 
 	multiProcessorCfg := builder.NewDefaultMultiSpanProcessorCfg().InitFromViper(v)
@@ -147,12 +156,38 @@ func execute() {
 			logger.Error("Failed to build the queued span processor", zap.Error(err))
 			os.Exit(1)
 		}
+		nameToSpanProcessor[queuedJaegerProcessorCfg.Name] = queuedJaegerProcessor
 		spanProcessors = append(spanProcessors, queuedJaegerProcessor)
 	}
 
 	if len(spanProcessors) == 0 {
 		logger.Warn("Nothing to do: no processor was enabled. Shutting down.")
 		os.Exit(1)
+	}
+
+	var tailSamplingProcessor processor.SpanProcessor
+	samplingProcessorCfg := builder.NewDefaultSamplingCfg().InitFromViper(v)
+	if samplingProcessorCfg.Mode == builder.TailSampling {
+		tailSamplingProcessor, err = buildSamplingProcessor(samplingProcessorCfg, nameToSpanProcessor, v, logger)
+		if err != nil {
+			logger.Error("Falied to build the sampling processor", zap.Error(err))
+			os.Exit(1)
+		}
+	} else if v.GetBool(debugTailSamplingFlg) {
+		logger.Info("Debugging tail-sampling with always sample policy (num_traces: 1000; decision_wait: 5s)")
+		policy := []*processor.Policy{
+			{
+				Name:         "tail-always-sampling",
+				Evaluator:    sampling.NewAlwaysSample(),
+				Destinations: spanProcessors,
+			},
+		}
+		tailSamplingProcessor = processor.NewTailSamplingSpanProcessor(policy, 1000, 5*time.Second, logger)
+	}
+
+	if tailSamplingProcessor != nil {
+		// SpanProcessors are going to go all via the tail sampling processor.
+		spanProcessors = []processor.SpanProcessor{tailSamplingProcessor}
 	}
 
 	// Wraps processors in a single one to be connected to all enabled receivers.
@@ -312,6 +347,48 @@ func createReceivers(spanProcessor processor.SpanProcessor) (closeFns []func()) 
 	}
 
 	return closeFns
+}
+
+func buildSamplingProcessor(cfg *builder.SamplingCfg, nameToSpanProcessor map[string]processor.SpanProcessor, v *viper.Viper, logger *zap.Logger) (processor.SpanProcessor, error) {
+	var policies []*processor.Policy
+	seenExporter := make(map[builder.PolicyType]bool)
+	for _, polCfg := range cfg.Policies {
+		policy := &processor.Policy {
+			Name: string(polCfg.Type),
+		}
+
+		switch polCfg.Type {
+		case builder.AlwaysSamplePolicy:
+			policy.Evaluator = sampling.NewAlwaysSample()
+		case builder.ProbabilisticPolicy:
+			policy.Evaluator = nil // TODO: (@tail)
+		case builder.OpenTracingHTTPErrorPolicy:
+			policy.Evaluator = sampling.NewAttributeFilter()
+		default:
+			return nil, fmt.Errorf("unknown sampling policy %s", polCfg.Type)
+		}
+
+		if _, ok := seenExporter[polCfg.Type]; ok {
+			return nil, fmt.Errorf("multiple sampling polices pointing to exporter %s", polCfg.Type)
+		}
+		seenExporter[polCfg.Type] = true
+
+		policyProcessor, ok := nameToSpanProcessor[polCfg.Exporter]
+		if !ok {
+			return nil, fmt.Errorf("invalid exporter %q for sampling policy %q", polCfg.Exporter, polCfg.Type)
+		}
+		policy.Destinations = []processor.SpanProcessor{policyProcessor}
+
+		policies = append(policies, policy)
+	}
+
+	if len(policies) < 1 {
+		return nil, fmt.Errorf("no sampling policies were configured")
+	}
+
+	tailCfg := builder.NewDefaultTailBasedCfg().InitFromViper(v)
+	tailSamplingProcessor := processor.NewTailSamplingSpanProcessor(policies, tailCfg.NumTraces, tailCfg.DecisionWait, logger)
+	return tailSamplingProcessor, nil
 }
 
 // Execute the application according to the command and configuration given

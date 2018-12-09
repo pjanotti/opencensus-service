@@ -116,6 +116,50 @@ func TestMultiAndQueuedSpanProcessorConfig(t *testing.T) {
 	}
 }
 
+func TestTailSamplingMode(t *testing.T) {
+	v, err := loadViperFromFile("./testdata/sampling_config.yaml")
+	if err != nil {
+		t.Fatalf("Failed to load viper from test file: %v", err)
+	}
+
+	wCfg := NewDefaultSamplingCfg()
+	if wCfg.Mode != NoSampling {
+		t.Fatalf("Default SamplingCfg Mode should be NoSampling")
+	}
+	wCfg.Mode = TailSampling
+	wCfg.Policies = []*PolicyCfg{
+		{
+			Type:     ProbabilisticPolicy,
+			Exporter: "jaeger1",
+		},
+		{
+			Type:     OpenTracingHTTPErrorPolicy,
+			Exporter: "jaeger2",
+		},
+	}
+
+	gCfg := NewDefaultSamplingCfg().InitFromViper(v)
+	if !reflect.DeepEqual(gCfg, wCfg) {
+		t.Fatalf("Wanted %+v but got %+v", *wCfg, *gCfg)
+	}
+}
+
+func TestTailSamplingConfig(t *testing.T) {
+	v, err := loadViperFromFile("./testdata/sampling_config.yaml")
+	if err != nil {
+		t.Fatalf("Failed to load viper from test file: %v", err)
+	}
+
+	wCfg := NewDefaultTailBasedCfg()
+	wCfg.DecisionWait = 31 * time.Second
+	wCfg.NumTraces = 20001
+
+	gCfg := NewDefaultTailBasedCfg().InitFromViper(v)
+	if !reflect.DeepEqual(gCfg, wCfg) {
+		t.Fatalf("Wanted %+v but got %+v", *wCfg, *gCfg)
+	}
+}
+
 func loadViperFromFile(file string) (*viper.Viper, error) {
 	v := viper.New()
 	v.SetConfigFile(file)
