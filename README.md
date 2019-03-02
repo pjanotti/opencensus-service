@@ -212,20 +212,11 @@ zpages:
 
 ### <a name="agent-usage"></a>Usage
 
-The ocagent can be run directly from sources, binary, or a Docker image. If you are planning to run from sources or build
-on your machine start by cloning the repo using `go get -d github.com/census-instrumentation/opencensus-service`.
+The ocagent can be run directly from sources, binary, or a Docker image. If you are planning to run or build from sources follow the instructions at [contributing](CONTRIBUTING.md).
 
 It is recommended that you use the latest [release](https://github.com/census-instrumentation/opencensus-service/releases).
 
-The minimum Go version required for this project is Go 1.11.4.
-
-1. Run from sources:
-
-```shell
-$ GO111MODULE=on go run github.com/census-instrumentation/opencensus-service/cmd/ocagent --help
-```
-
-2. Run from binary (from the root of your repo):
+Docker command (additional ports may be required depending on your receiver configuration):
 
 ```shell
 $ make agent
@@ -327,24 +318,12 @@ sampling:
 
 ### <a name="collector-usage"></a>Usage
 
-> It is recommended that you use the latest [release](https://github.com/census-instrumentation/opencensus-service/releases).
+The occollector can be run directly from sources, binary, or a Docker image. If you are planning to run or build from sources follow the instructions at [contributing](CONTRIBUTING.md).
 
-The collector can be run directly from sources, binary, or a Docker image. If you are planning to run from sources or build
-on your machine start by cloning the repo using `go get -d github.com/census-instrumentation/opencensus-service`.
+It is recommended that you use the latest [release](https://github.com/census-instrumentation/opencensus-service/releases).
 
-The minimum Go version required for this project is Go 1.11.4.
+Docker command (additional ports may be required depending on your receiver configuration):
 
-1. Run from sources:
-```shell
-$ GO111MODULE=on go run github.com/census-instrumentation/opencensus-service/cmd/occollector --help
-```
-2. Run from binary (from the root of your repo):
-```shell
-$ make collector
-$ ./bin/occollector_$($GOOS)
-```
-3. Build a Docker scratch image and use the appropriate Docker command for your scenario
-(note: additional ports may be required depending on your receiver configuration):
 ```shell
 $ make docker-collector
 $ docker run \

@@ -23,7 +23,17 @@ information on using pull requests.
 
 [GitHub Help]: https://help.github.com/articles/about-pull-requests/
 
-## Instructions
+## Required Tools
+
+Working with the project sources requires the following tools:
+
+1. [git](https://git-scm.com/)
+2. [bzr](http://bazaar.canonical.com/en/)
+3. [go](https://golang.org/) (version 1.11.4 and up)
+4. [make](https://www.gnu.org/software/make/)
+5. [docker](https://www.docker.com/)
+
+## Repository Setup
 
 Fork the repo, checkout the upstream repo to your GOPATH by:
 
@@ -33,6 +43,19 @@ $ GO111MODULE="" go get -d github.com/census-instrumentation/opencensus-service
 
 Add your fork as an origin:
 
+```shell
+$ cd $(go env GOPATH)/github.com/census-instrumentation/opencensus-service
+$ git remote add fork git@github.com:YOUR_GITHUB_USERNAME/opencensus-service.git
+```
+
+Install extra build tools (from the root of your repo):
+
+```shell
+$ make install-tools
+```
+
+Run make againt the default target:
+
 ```
 cd $(go env GOPATH)/src/github.com/census-instrumentation/opencensus-service
 git remote add fork git@github.com:YOUR_GITHUB_USERNAME/opencensus-service.git
@@ -40,24 +63,56 @@ git remote add fork git@github.com:YOUR_GITHUB_USERNAME/opencensus-service.git
 
 Run tests, fmt and lint:
 
+1.1. Agent:
+```shell
+$ GO111MODULE=on go run ./cmd/ocagent/main.go
 ```
 $ make install-tools # Only first time.
 $ make
 ```
 
-Checkout a new branch, make modifications and push the branch to your fork
+2. Build and run the binary (from the root of your repo):
+
+2.1. Agent:
+```shell
+$ make agent
+$ ./bin/ocagent_$(go env GOOS)
+```
+
+2.2. Collector:
+```shell
+$ make collector
+$ ./bin/occollector_$(go env GOOS)
+```
+
+3. Build a Docker scratch image and use the appropriate Docker command for your scenario:
+
+3.1. Agent:
+```shell
+$ make docker-agent
+```
+
+3.2. Collector:
+```shell
+$ make docker-collector
+```
+
+## Creating a PR
+
+Checkout a new branch, make modifications, build locally, and push the branch to your fork
 to open a new PR:
 
 ```
 $ git checkout -b feature
 # edit
+$ make
 $ git commit
 $ git push fork feature
 ```
 
 ## General Notes
 
-This project uses Go 1.11.4 and Travis for CI.
+This project uses Travis for CI.
 
 Travis CI uses the Makefile with the default target, it is recommended to
 run it before submitting your PR. It runs `gofmt -s` (simplify) and `golint`.
