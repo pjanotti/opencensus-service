@@ -44,57 +44,15 @@ $ GO111MODULE="" go get -d github.com/census-instrumentation/opencensus-service
 Add your fork as an origin:
 
 ```shell
-$ cd $(go env GOPATH)/github.com/census-instrumentation/opencensus-service
+$ cd $(go env GOPATH)/src/github.com/census-instrumentation/opencensus-service
 $ git remote add fork git@github.com:YOUR_GITHUB_USERNAME/opencensus-service.git
-```
-
-Install extra build tools (from the root of your repo):
-
-```shell
-$ make install-tools
-```
-
-Run make againt the default target:
-
-```
-cd $(go env GOPATH)/src/github.com/census-instrumentation/opencensus-service
-git remote add fork git@github.com:YOUR_GITHUB_USERNAME/opencensus-service.git
 ```
 
 Run tests, fmt and lint:
 
-1.1. Agent:
-```shell
-$ GO111MODULE=on go run ./cmd/ocagent/main.go
-```
+```shell 
 $ make install-tools # Only first time.
 $ make
-```
-
-2. Build and run the binary (from the root of your repo):
-
-2.1. Agent:
-```shell
-$ make agent
-$ ./bin/ocagent_$(go env GOOS)
-```
-
-2.2. Collector:
-```shell
-$ make collector
-$ ./bin/occollector_$(go env GOOS)
-```
-
-3. Build a Docker scratch image and use the appropriate Docker command for your scenario:
-
-3.1. Agent:
-```shell
-$ make docker-agent
-```
-
-3.2. Collector:
-```shell
-$ make docker-collector
 ```
 
 ## Creating a PR
@@ -102,7 +60,7 @@ $ make docker-collector
 Checkout a new branch, make modifications, build locally, and push the branch to your fork
 to open a new PR:
 
-```
+```shell
 $ git checkout -b feature
 # edit
 $ make
