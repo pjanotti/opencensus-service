@@ -16,6 +16,7 @@ package opencensusexporter
 
 import (
 	"context"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"sync/atomic"
@@ -38,8 +39,9 @@ type opencensusConfig struct {
 	Headers     map[string]string `mapstructure:"headers,omitempty"`
 	NumWorkers  int               `mapstructure:"num-workers,omitempty"`
 	CertPemFile string            `mapstructure:"cert-pem-file,omitempty"`
+	UseInsecure bool              `mapstructure:"insecure"`
 
-	// TODO: add insecure, service name options.
+	// TODO: service name options.
 }
 
 type ocagentExporter struct {
@@ -91,6 +93,13 @@ func OpenCensusTraceExportersFromViper(v *viper.Viper) (tps []consumer.TraceCons
 		if err != nil {
 			return nil, nil, nil, ErrUnableToGetTLSCreds
 		}
+		opts = append(opts, ocagent.WithTLSCredentials(creds))
+	} else if !ocac.UseInsecure {
+		certPool, err := x509.SystemCertPool()
+		if err != nil {
+			return nil, nil, nil, ErrUnableToGetTLSCreds
+		}
+		creds := credentials.NewClientTLSFromCert(certPool, "")
 		opts = append(opts, ocagent.WithTLSCredentials(creds))
 	} else {
 		opts = append(opts, ocagent.WithInsecure())
